@@ -1,5 +1,5 @@
 '''
-11/15/2019:
+11/18/2019: 增加两项功能：1）支持多个dumb area（dumb_areas)；2）支持删除上一个门框或dumb_area.
 10/30/2019: 试验第一种方法：门框全部简化为直线，根据框消失/出现时，框的中心点离哪条门框直线的距离最近，认为是进入/离开了哪个房间
 1. 在手动选择每个门框的两个点之后，将两个点的横坐标取均值作为门框x位置，y方向先不用；
 2. 明确跟踪算法的消失时间：max_age in tracker.py
@@ -30,7 +30,9 @@ from math import sqrt
 
 warnings.filterwarnings('ignore')
 
+dumb_areas = []
 dumb_area = []  # 记录走廊尽头的范围，在这个区域内出现或消失的人相框不算进出
+counter1 = 0
 doors = []  # 记录门框位置的list，按下小写L输入四个点（四边形），按下i输入两个点（直线）
 door_frame = []
 door_counter = 0
@@ -46,25 +48,25 @@ def on_EVENT_LBUTTONDOWN(event, x, y, flags, param):
     :param param: param[0]: img under process, param[1]: imshow name like 'cool', param[2]: key_pressed
     :return:
     '''
-    global dumb_area, doors, door_counter, door_frame, key_pressed
+    global dumb_areas, dumb_area, counter1, doors, door_counter, door_frame, key_pressed
 
-    # dumb area
+    # dumb areas
     if param[2] == ord('a'):  # take 4 input points (left kick) as a dumb area
         if (event == cv2.EVENT_LBUTTONDOWN) & (door_counter < 4):
             dumb_area.append((x, y))
-            door_counter += 1
-            if door_counter == 4:
-                door_counter = 0
+            counter1 += 1
+            if counter1 == 4:
+                dumb_areas.append(dumb_area)
+                dumb_area = []
+                counter1 = 0
                 key_pressed = ord('p')
-    if param[2] == ord('z'):  # 按下z重新设置dumb area
-        if door_counter == 0:
-            dumb_area = []
-        if (event == cv2.EVENT_LBUTTONDOWN) & (door_counter < 4):
-            dumb_area.append((x, y))
-            door_counter += 1
-            if door_counter == 4:
-                door_counter = 0
-                key_pressed = ord('p')
+    # 按下z弹出最后一次设置的dumb area
+    if param[2] == ord('z'):
+        try:
+            dumb_areas.pop()
+        except:
+            print("no more dumb areas to pop...")
+        key_pressed = ord('p')
 
     # doors
     if param[2] == ord('d'):  # take 2 input points (left kick)
@@ -76,27 +78,34 @@ def on_EVENT_LBUTTONDOWN(event, x, y, flags, param):
                 door_frame = []
                 door_counter = 0
                 key_pressed = ord('p')
+    # 按下c弹出最后一个设置的door
+    if param[2] == ord('c'):
+        try:
+            doors.pop()
+        except:
+            print("no more doors to pop...")
+        key_pressed = ord('p')
+
     # cv2.imshow(param[1], param[0])
 
-def point_in_rect(bbox, rect):  # 判断一个bbox的中心是否在一个矩形（可以是非规则四边形）内部
+def point_in_rect(bbox, dumb_areas):  # 判断一个bbox的中心是否在一个矩形（可以是非规则四边形）内部
     """
     :param bbox: in the form like (xmin, ymin, xmax, ymax)
     :param rect: in the form like [(x1, y1), (x2, y2), (x3, y3), (x4, y4)], points are randomly arranged
     :return: true if the center of the bbox lies inside the rectangle
     """
     # 得到人相框中心
-    if len(rect) < 4:
+    if not len(dumb_areas):
         return False
     x = (bbox[0] + bbox[2]) / 2
     y = (bbox[1] + bbox[3]) / 2
-    # 得到矩形边界，(以rect指定的任意四边形的外接矩形为准)
-    lr = sorted(rect, key=lambda arg: arg[0])  # left-right, 将rect的四个点按水平位置排序, lr[1][0]就是左边第二个点的x坐标
-    ud = sorted(rect, key=lambda arg: arg[1])  # up-down, 将rect的四个点按垂直位置排序
-    # print('rect: ', rect, 'lr: ', lr, 'ud: ', ud)
-    if lr[0][0] < x < lr[3][0] and ud[0][1] < y < ud[3][1]:
-        return True
-    else:
-        return False
+    # 对每一个dumb_area，得到其矩形边界，(以rect指定的任意四边形的外接矩形为准)
+    for rect in dumb_areas:
+        lr = sorted(rect, key=lambda arg: arg[0])  # left-right, 将rect的四个点按水平位置排序, lr[1][0]就是左边第二个点的x坐标
+        ud = sorted(rect, key=lambda arg: arg[1])  # up-down, 将rect的四个点按垂直位置排序
+        if lr[0][0] < x < lr[3][0] and ud[0][1] < y < ud[3][1]:
+            return True
+    return False
 
 
 def main(yolo):
@@ -124,7 +133,7 @@ def main(yolo):
         t1 = time.time()
         ret, frame = video_capture.read()  # frame shape 640*480*3
         if not ret:
-            print('again')
+            print('rewinding and play the same video again...')
             video_capture = cv2.VideoCapture(video)
             frame_ID = 0
             continue
@@ -186,18 +195,17 @@ def main(yolo):
                     top, bottom = door[1], door[0]
                 cv2.line(frame, top, bottom, (0, 255, 0), 2)
 
-        if len(dumb_area):  # 画出dumb_area
-            points = np.array(dumb_area, np.int32).reshape((-1, 1, 2))
-            # pts = points.reshape((-1, 1, 2))
-            cv2.polylines(frame, [points], True, (255, 255, 0), 2)
+        if len(dumb_areas):  # 画出dumb_areas
+            for dumb_area in dumb_areas:
+                points = np.array(dumb_area, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(frame, [points], True, (255, 255, 0), 2)
 
         # 处理新增/消失的人相框
         # 新增
         if len(tracker.newly_add):
-            print('new tracks: ', tracker.newly_add)  # 记录
+            # print('new tracks: ', tracker.newly_add)  # 记录
             for key in tracker.newly_add.keys():
-                # print('dumb_area: ', dumb_area)
-                if not point_in_rect(tracker.newly_add[key], dumb_area):  # 如果新出现的框在dumb_area内部，就丢弃
+                if not point_in_rect(tracker.newly_add[key], dumb_areas):  # 如果新出现的框在dumb_areas内部，就丢弃
                     draw_newly_add[key] = [tracker.newly_add[key], 100]  # 100是在图上显示100帧
             tracker.newly_add = defaultdict(list)
         for key in draw_newly_add.keys():
@@ -226,9 +234,9 @@ def main(yolo):
                 del draw_newly_add[key]
         # 消失
         if len(tracker.newly_del):
-            print('del tracks: ', tracker.newly_del)  # 记录
+            # print('del tracks: ', tracker.newly_del)  # 记录
             for key in tracker.newly_del.keys():
-                if not point_in_rect(tracker.newly_del[key], dumb_area):
+                if not point_in_rect(tracker.newly_del[key], dumb_areas):
                     draw_newly_del[key] = [tracker.newly_del[key], 100]  # 100是在图上显示100帧
             tracker.newly_del = defaultdict(list)
         for key in draw_newly_del.keys():
